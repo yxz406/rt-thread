@@ -1,33 +1,17 @@
 /*
- * File      : clock.c
- * This file is part of RT-Thread RTOS
- * COPYRIGHT (C) 2006 - 2018, RT-Thread Development Team
+ * Copyright (c) 2006-2018, RT-Thread Development Team
  *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Change Logs:
  * Date           Author       Notes
+ * 2006-03-12     Bernard      first version
+ * 2018-11-02     heyuanjie    fix complie error in iar
  */
 
 #include <rtthread.h>
 #include <rthw.h>
 #include <dfs_posix.h>
-
-#ifdef RT_USING_FINSH
-    #include <finsh.h>
-#endif
 
 #ifndef RT_USING_DFS
     #error  "lwp need file system(RT_USING_DFS)"
@@ -35,14 +19,11 @@
 
 #include "lwp.h"
 
-#define DBG_ENABLE
-#define DBG_SECTION_NAME    "[LWP]"
-#define DBG_COLOR
-#define DBG_LEVEL           DBG_LOG
+#define DBG_TAG    "LWP"
+#define DBG_LVL    DBG_WARNING
 #include <rtdbg.h>
 
-extern rt_thread_t rt_current_thread;
-extern void lwp_user_entry(const void *text, void *data);
+extern void lwp_user_entry(void *args, const void *text, void *data);
 
 /**
  * RT-Thread light-weight process
@@ -50,16 +31,53 @@ extern void lwp_user_entry(const void *text, void *data);
 void lwp_set_kernel_sp(uint32_t *sp)
 {
     struct rt_lwp *user_data;
-    user_data = (struct rt_lwp *)rt_current_thread->user_data;
+    user_data = (struct rt_lwp *)rt_thread_self()->lwp;
     user_data->kernel_sp = sp;
 }
 
 uint32_t *lwp_get_kernel_sp(void)
 {
     struct rt_lwp *user_data;
-    user_data = (struct rt_lwp *)rt_current_thread->user_data;
+    user_data = (struct rt_lwp *)rt_thread_self()->lwp;
 
     return user_data->kernel_sp;
+}
+
+static int lwp_argscopy(struct rt_lwp *lwp, int argc, char **argv)
+{
+    int size = sizeof(int)*3; /* store argc, argv, NULL */
+    int *args;
+    char *str;
+    char **new_argv;
+    int i;
+    int len;
+
+    for (i = 0; i < argc; i ++)
+    {
+        size += (rt_strlen(argv[i]) + 1);
+    }
+    size  += (sizeof(int) * argc);
+
+    args = (int*)rt_malloc(size);
+    if (args == RT_NULL)
+        return -1;
+
+    str = (char*)((int)args + (argc + 3) * sizeof(int));
+    new_argv = (char**)&args[2];
+    args[0] = argc;
+    args[1] = (int)new_argv;
+
+    for (i = 0; i < argc; i ++)
+    {
+        len = rt_strlen(argv[i]) + 1;
+        new_argv[i] = str;
+        rt_memcpy(str, argv[i], len);
+        str += len;
+    }
+    new_argv[i] = 0;
+    lwp->args = args;
+
+    return 0;
 }
 
 static int lwp_load(const char *filename, struct rt_lwp *lwp, uint8_t *load_addr, size_t addr_size)
@@ -75,8 +93,6 @@ static int lwp_load(const char *filename, struct rt_lwp *lwp, uint8_t *load_addr
     RT_ASSERT(filename != RT_NULL);
     /* check lwp control block */
     RT_ASSERT(lwp != RT_NULL);
-
-    memset(lwp, 0x00, sizeof(struct rt_lwp));
 
     if (load_addr != RT_NULL)
     {
@@ -255,7 +271,7 @@ static void lwp_cleanup(struct rt_thread *tid)
 
     dbg_log(DBG_INFO, "thread: %s, stack_addr: %08X\n", tid->name, tid->stack_addr);
 
-    lwp = (struct rt_lwp *)tid->user_data;
+    lwp = (struct rt_lwp *)tid->lwp;
 
     if (lwp->lwp_type == LWP_TYPE_DYN_ADDR)
     {
@@ -279,6 +295,10 @@ static void lwp_cleanup(struct rt_thread *tid)
     dbg_log(DBG_LOG, "lwp free memory pages\n");
     rt_lwp_mem_deinit(lwp);
 
+    /* cleanup fd table */
+    rt_free(lwp->fdt.fds);
+    rt_free(lwp->args);
+
     dbg_log(DBG_LOG, "lwp free: %p\n", lwp);
     rt_free(lwp);
 
@@ -287,27 +307,24 @@ static void lwp_cleanup(struct rt_thread *tid)
 
 static void lwp_thread(void *parameter)
 {
-    volatile uint32_t tmp;
     rt_thread_t tid;
     struct rt_lwp *lwp;
-
-    rt_kprintf("%08x %08x\n", &tmp, tmp);
 
     lwp = (struct rt_lwp *)parameter;
     rt_lwp_mem_init(lwp);
     tid = rt_thread_self();
-    tid->user_data = (rt_uint32_t)lwp;
+    tid->lwp = lwp;
     tid->cleanup = lwp_cleanup;
 
-    lwp_user_entry(lwp->text_entry, lwp->data);
+    lwp_user_entry(lwp->args, lwp->text_entry, lwp->data);
 }
 
 struct rt_lwp *rt_lwp_self(void)
 {
-    return (struct rt_lwp *)rt_thread_self()->user_data;
+    return (struct rt_lwp *)rt_thread_self()->lwp;
 }
 
-int exec(char *filename)
+int exec(char *filename, int argc, char **argv)
 {
     struct rt_lwp *lwp;
     int result;
@@ -324,6 +341,12 @@ int exec(char *filename)
     dbg_log(DBG_INFO, "lwp malloc : %p, size: %d!\n", lwp, sizeof(struct rt_lwp));
 
     rt_memset(lwp, 0, sizeof(*lwp));
+    if (lwp_argscopy(lwp, argc, argv) != 0)
+    {
+        rt_free(lwp);
+        return -ENOMEM;
+    }
+
     result = lwp_load(filename, lwp, RT_NULL, 0);
     if (result == RT_EOK)
     {
@@ -348,6 +371,7 @@ int exec(char *filename)
         }
     }
 
+    rt_free(lwp->args);
     rt_free(lwp);
 
     return -RT_ERROR;

@@ -1,21 +1,7 @@
 /*
- * File      : device.c
- * This file is part of RT-Thread RTOS
- * COPYRIGHT (C) 2006 - 2013, RT-Thread Development Team
+ * Copyright (c) 2006-2018, RT-Thread Development Team
  *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Change Logs:
  * Date           Author       Notes
@@ -29,6 +15,9 @@
  */
 
 #include <rtthread.h>
+#if defined(RT_USING_POSIX)
+#include <rtdevice.h> /* for wqueue_init */
+#endif
 
 #ifdef RT_USING_DEVICE
 
@@ -74,7 +63,7 @@ rt_err_t rt_device_register(rt_device_t dev,
 
 #if defined(RT_USING_POSIX)
     dev->fops = RT_NULL;
-    rt_list_init(&(dev->wait_queue));
+    rt_wqueue_init(&(dev->wait_queue));
 #endif
 
     return RT_EOK;
@@ -91,6 +80,8 @@ RTM_EXPORT(rt_device_register);
 rt_err_t rt_device_unregister(rt_device_t dev)
 {
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
+    RT_ASSERT(rt_object_is_systemobject(&dev->parent));
 
     rt_object_detach(&(dev->parent));
 
@@ -104,7 +95,7 @@ RTM_EXPORT(rt_device_unregister);
  * @return the error code, RT_EOK on successfully.
  *
  * @deprecated since 1.2.x, this function is not needed because the initialization
- *             of a device is performed when applicaiton opens it.
+ *             of a device is performed when application opens it.
  */
 rt_err_t rt_device_init_all(void)
 {
@@ -171,7 +162,7 @@ rt_device_t rt_device_create(int type, int attach_size)
 
     size = RT_ALIGN(sizeof(struct rt_device), RT_ALIGN_SIZE);
     attach_size = RT_ALIGN(attach_size, RT_ALIGN_SIZE);
-    /* use the totoal size */
+    /* use the total size */
     size += attach_size;
 
     device = (rt_device_t)rt_malloc(size);
@@ -188,15 +179,18 @@ RTM_EXPORT(rt_device_create);
 /**
  * This function destroy the specific device object.
  *
- * @param device, the specific device object.
+ * @param dev, the specific device object.
  */
-void rt_device_destroy(rt_device_t device)
+void rt_device_destroy(rt_device_t dev)
 {
-    /* unregister device firstly */
-    rt_device_unregister(device);
+    RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
+    RT_ASSERT(rt_object_is_systemobject(&dev->parent) == RT_FALSE);
+
+    rt_object_detach(&(dev->parent));
 
     /* release this device object */
-    rt_free(device);
+    rt_free(dev);
 }
 RTM_EXPORT(rt_device_destroy);
 #endif
@@ -214,7 +208,7 @@ rt_err_t rt_device_init(rt_device_t dev)
 
     RT_ASSERT(dev != RT_NULL);
 
-    /* get device init handler */
+    /* get device_init handler */
     if (device_init != RT_NULL)
     {
         if (!(dev->flag & RT_DEVICE_FLAG_ACTIVATED))
@@ -248,6 +242,7 @@ rt_err_t rt_device_open(rt_device_t dev, rt_uint16_t oflag)
     rt_err_t result = RT_EOK;
 
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
     /* if device is not initialized, initialize it. */
     if (!(dev->flag & RT_DEVICE_FLAG_ACTIVATED))
@@ -274,7 +269,7 @@ rt_err_t rt_device_open(rt_device_t dev, rt_uint16_t oflag)
         return -RT_EBUSY;
     }
 
-    /* call device open interface */
+    /* call device_open interface */
     if (device_open != RT_NULL)
     {
         result = device_open(dev, oflag);
@@ -312,6 +307,7 @@ rt_err_t rt_device_close(rt_device_t dev)
     rt_err_t result = RT_EOK;
 
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
     if (dev->ref_count == 0)
         return -RT_ERROR;
@@ -321,7 +317,7 @@ rt_err_t rt_device_close(rt_device_t dev)
     if (dev->ref_count != 0)
         return RT_EOK;
 
-    /* call device close interface */
+    /* call device_close interface */
     if (device_close != RT_NULL)
     {
         result = device_close(dev);
@@ -353,6 +349,7 @@ rt_size_t rt_device_read(rt_device_t dev,
                          rt_size_t   size)
 {
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
     if (dev->ref_count == 0)
     {
@@ -360,7 +357,7 @@ rt_size_t rt_device_read(rt_device_t dev,
         return 0;
     }
 
-    /* call device read interface */
+    /* call device_read interface */
     if (device_read != RT_NULL)
     {
         return device_read(dev, pos, buffer, size);
@@ -391,6 +388,7 @@ rt_size_t rt_device_write(rt_device_t dev,
                           rt_size_t   size)
 {
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
     if (dev->ref_count == 0)
     {
@@ -398,7 +396,7 @@ rt_size_t rt_device_write(rt_device_t dev,
         return 0;
     }
 
-    /* call device write interface */
+    /* call device_write interface */
     if (device_write != RT_NULL)
     {
         return device_write(dev, pos, buffer, size);
@@ -423,8 +421,9 @@ RTM_EXPORT(rt_device_write);
 rt_err_t rt_device_control(rt_device_t dev, int cmd, void *arg)
 {
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
-    /* call device write interface */
+    /* call device_write interface */
     if (device_control != RT_NULL)
     {
         return device_control(dev, cmd, arg);
@@ -448,6 +447,7 @@ rt_device_set_rx_indicate(rt_device_t dev,
                           rt_err_t (*rx_ind)(rt_device_t dev, rt_size_t size))
 {
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
     dev->rx_indicate = rx_ind;
 
@@ -469,6 +469,7 @@ rt_device_set_tx_complete(rt_device_t dev,
                           rt_err_t (*tx_done)(rt_device_t dev, void *buffer))
 {
     RT_ASSERT(dev != RT_NULL);
+    RT_ASSERT(rt_object_get_type(&dev->parent) == RT_Object_Class_Device);
 
     dev->tx_complete = tx_done;
 
